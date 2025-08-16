@@ -2,9 +2,10 @@
   "name": "suelenbot",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server_suelen.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server_suelen.js"
   },
   "keywords": [],
   "author": "",
