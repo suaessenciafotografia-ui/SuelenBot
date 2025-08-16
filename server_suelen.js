@@ -14,7 +14,7 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// Configuração Twilio (ajustada)
+// Configuração Twilio
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
@@ -31,7 +31,7 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: "v4", auth });
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
-// Lista de contatos salvos (adicione os números já conhecidos)
+// Lista de contatos salvos
 const contatosSalvos = ["5511999999999", "5511888888888"];
 
 // Palavras-chave para orçamento/valores
@@ -54,43 +54,47 @@ function deveResponder(numero, mensagem) {
   return !contatoSalvo || temPalavraChave;
 }
 
-// Prompt base da Suelen
-const SYSTEM_PROMPT = `Você é Suelen, assistente virtual do fotógrafo Jonatas Teixeira (Sua Essência Fotografia). 
-Seu papel: receber clientes pelo WhatsApp de forma acolhedora, simpática e natural, com emojis quando fizer sentido.
+// Controle de fluxo por cliente
+const clientes = {};
 
-Regras e fluxo de interação:
-1. **Apresentação única**: Apresente-se apenas uma vez no início da conversa. Exemplo: "Oi! Eu sou a Suelen, assistente do Jonatas 😊". Não repita saudações em nenhuma outra resposta.
-2. **Coleta de informações essenciais**:
-   - Pergunte sobre o momento do cliente de forma natural: 
-     - "Me conta um pouco sobre sua área de atuação e seus objetivos profissionais ou pessoais 🎯"
-   - Pergunte de forma única como fotos profissionais podem ajudá-lo no momento atual, de forma acolhedora e envolvente.
-   - Pergunte sobre a data prevista da sessão 📅
-3. **Compartilhamento de portfólio**:
-   - Baseie o link no gênero do cliente, e compartilhe **apenas uma vez**:
-     - Mulheres:
-       - https://suaessenciafotografia.pixieset.com/letciapache/
-       - https://suaessenciafotografia.pixieset.com/marliacatalano/
-       - https://suaessenciafotografia.pixieset.com/aylapacheli/
-     - Homens:
-       - https://suaessenciafotografia.pixieset.com/talesgabbi/
-       - https://suaessenciafotografia.pixieset.com/dredsonuramoto/
-       - https://suaessenciafotografia.pixieset.com/drwilliamschwarzer/
-4. **Fechamento único**:
-   - Resuma todas as informações coletadas e informe que Jonatas enviará um orçamento personalizado ✨
-5. **Estilo e comportamento**:
-   - Use emojis quando fizer sentido
-   - Nunca repita cumprimentos, elogios ou respostas genéricas como “OK”
-   - Fluida, objetiva, natural e próxima
-   - Persuasiva de forma leve, sem forçar a venda
-6. **Memória de fluxo interno (para o modelo)**:
-   - Imagine que você tem uma “checklist mental” de cada etapa:
-     - Apresentação feita ✅
-     - Pergunta sobre área/objetivo feita ✅
-     - Pergunta sobre data feita ✅
-     - Portfólio enviado ✅
-     - Fechamento feito ✅
-   - Nunca repita nada que já tenha marcado como concluído`;
+// Função que decide o próximo passo da Suelen
+function gerarPromptFluxo(clienteId, mensagemCliente) {
+  if (!clientes[clienteId]) {
+    clientes[clienteId] = {
+      apresentacao: false,
+      perguntaArea: false,
+      perguntaFotos: false,
+      portfólioEnviado: false,
+      dataPerguntada: false,
+      fechamento: false
+    };
+  }
 
+  const estado = clientes[clienteId];
+  let prompt = "";
+
+  if (!estado.apresentacao) {
+    prompt = "Apresente-se como Suelen, assistente do Jonatas 😊. Seja acolhedora e simpática. Não repita.";
+    estado.apresentacao = true;
+  } else if (!estado.perguntaArea) {
+    prompt = "Pergunte de forma natural sobre a área de atuação e objetivos do cliente 🎯";
+    estado.perguntaArea = true;
+  } else if (!estado.perguntaFotos) {
+    prompt = "Pergunte como fotos profissionais podem ajudar no momento atual do cliente, de forma acolhedora";
+    estado.perguntaFotos = true;
+  } else if (!estado.portfólioEnviado) {
+    prompt = "Envie links do portfólio relevante (mulher ou homem) apenas uma vez, de forma simpática:\n- Mulheres:\nhttps://suaessenciafotografia.pixieset.com/letciapache/\nhttps://suaessenciafotografia.pixieset.com/marliacatalano/\nhttps://suaessenciafotografia.pixieset.com/aylapacheli/\n- Homens:\nhttps://suaessenciafotografia.pixieset.com/talesgabbi/\nhttps://suaessenciafotografia.pixieset.com/dredsonuramoto/\nhttps://suaessenciafotografia.pixieset.com/drwilliamschwarzer/";
+    estado.portfólioEnviado = true;
+  } else if (!estado.dataPerguntada) {
+    prompt = "Pergunte se o cliente tem alguma data prevista para a sessão 📅";
+    estado.dataPerguntada = true;
+  } else if (!estado.fechamento) {
+    prompt = "Finalize de forma simpática, informando que Jonatas enviará um orçamento personalizado ✨";
+    estado.fechamento = true;
+  }
+
+  return prompt;
+}
 
 app.get("/", (req, res) => {
   res.send("🚀 Suelen está rodando!");
@@ -101,7 +105,6 @@ app.post("/whatsapp", async (req, res) => {
   const incomingMsg = req.body.Body || "";
   const from = req.body.From || "";
   
-  // 🔑 Ajuste: sempre forçar que o número de envio seja no formato whatsapp:
   const twilioNumber = `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`;
 
   console.log("Mensagem recebida:", incomingMsg);
@@ -109,26 +112,35 @@ app.post("/whatsapp", async (req, res) => {
 
   try {
     if (deveResponder(from, incomingMsg)) {
-      // Chamar OpenAI
-      const aiResponse = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: incomingMsg },
-        ],
-        temperature: 0.7,
-      });
+      const promptFluxo = gerarPromptFluxo(from, incomingMsg);
 
-      const reply = aiResponse.choices[0].message.content;
+      if (promptFluxo) {
+        // Chamar OpenAI
+        const aiResponse = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: `Você é Suelen, assistente do fotógrafo Jonatas Teixeira, acolhedora, simpática, natural, persuasiva, com emojis.`
+            },
+            { role: "user", content: promptFluxo }
+          ],
+          temperature: 0.7,
+        });
 
-      // Enviar resposta pelo Twilio
-      await client.messages.create({
-        from: twilioNumber, // agora garante o canal correto
-        to: from,           // usuário que mandou msg
-        body: reply,
-      });
+        const reply = aiResponse.choices[0].message.content;
 
-      console.log("Resposta enviada:", reply);
+        // Simular pausa antes de enviar
+        await new Promise(r => setTimeout(r, 1500));
+
+        await client.messages.create({
+          from: twilioNumber,
+          to: from,
+          body: reply,
+        });
+
+        console.log("Resposta da Suelen:", reply);
+      }
     }
 
     // Salvar no Google Sheets
@@ -148,11 +160,8 @@ app.post("/whatsapp", async (req, res) => {
   }
 });
 
-// Inicia servidor (Render usa PORT)
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor da Suelen rodando na porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Servidor da Suelen rodando na porta ${PORT}`));
 
 
 
