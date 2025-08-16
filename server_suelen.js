@@ -65,6 +65,7 @@ app.get("/", (req, res) => {
 });
 
 app.post("/whatsapp", async (req, res) => {
+  console.log("Servidor recebeu a requisição!");
   const incomingMsg = req.body.Body || "";
   const from = req.body.From || "";
   const to = req.body.To || process.env.TWILIO_PHONE_NUMBER;
@@ -118,5 +119,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor da Suelen rodando na porta ${PORT}`);
 });
+
 
 
