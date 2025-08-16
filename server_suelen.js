@@ -20,6 +20,8 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
+const MEU_NUMERO = `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`;
+
 // Configuração OpenAI
 const openai = new OpenAI({ apiKey: process.env.OPENAI_KEY });
 
@@ -57,8 +59,20 @@ function deveResponder(numero, mensagem) {
 // Controle de fluxo por cliente
 const clientes = {};
 
+// Função para detectar gênero com base no nome (simples)
+function detectarGenero(nomeCliente) {
+  if (!nomeCliente) return "mulher"; // padrão
+  const feminino = ["a", "ana", "mar", "let", "ayla"]; // nomes femininos comuns
+  const masculino = ["tales", "dred", "dr", "will"]; // nomes masculinos comuns
+
+  const nomeLower = nomeCliente.toLowerCase();
+  if (feminino.some(n => nomeLower.includes(n))) return "mulher";
+  if (masculino.some(n => nomeLower.includes(n))) return "homem";
+  return "mulher"; // padrão
+}
+
 // Função que decide o próximo passo da Suelen
-function gerarPromptFluxo(clienteId, mensagemCliente) {
+function gerarPromptFluxo(clienteId, mensagemCliente, nomeCliente = "") {
   if (!clientes[clienteId]) {
     clientes[clienteId] = {
       apresentacao: false,
@@ -83,7 +97,12 @@ function gerarPromptFluxo(clienteId, mensagemCliente) {
     prompt = "Pergunte como fotos profissionais podem ajudar no momento atual do cliente, de forma acolhedora";
     estado.perguntaFotos = true;
   } else if (!estado.portfólioEnviado) {
-    prompt = "Envie links do portfólio relevante (mulher ou homem) apenas uma vez, de forma simpática:\n- Mulheres:\nhttps://suaessenciafotografia.pixieset.com/letciapache/\nhttps://suaessenciafotografia.pixieset.com/marliacatalano/\nhttps://suaessenciafotografia.pixieset.com/aylapacheli/\n- Homens:\nhttps://suaessenciafotografia.pixieset.com/talesgabbi/\nhttps://suaessenciafotografia.pixieset.com/dredsonuramoto/\nhttps://suaessenciafotografia.pixieset.com/drwilliamschwarzer/";
+    const genero = detectarGenero(nomeCliente);
+    if (genero === "mulher") {
+      prompt = "Envie links do portfólio feminino apenas uma vez, de forma simpática:\n- https://suaessenciafotografia.pixieset.com/letciapache/\n- https://suaessenciafotografia.pixieset.com/marliacatalano/\n- https://suaessenciafotografia.pixieset.com/aylapacheli/";
+    } else {
+      prompt = "Envie links do portfólio masculino apenas uma vez, de forma simpática:\n- https://suaessenciafotografia.pixieset.com/talesgabbi/\n- https://suaessenciafotografia.pixieset.com/dredsonuramoto/\n- https://suaessenciafotografia.pixieset.com/drwilliamschwarzer/";
+    }
     estado.portfólioEnviado = true;
   } else if (!estado.dataPerguntada) {
     prompt = "Pergunte se o cliente tem alguma data prevista para a sessão 📅";
@@ -104,15 +123,14 @@ app.post("/whatsapp", async (req, res) => {
   console.log("Servidor recebeu a requisição!");
   const incomingMsg = req.body.Body || "";
   const from = req.body.From || "";
-  
-  const twilioNumber = `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`;
+  const nomeCliente = req.body.ProfileName || "";
 
   console.log("Mensagem recebida:", incomingMsg);
-  console.log("De:", from, "Para:", twilioNumber);
+  console.log("De:", from, "Nome do cliente:", nomeCliente);
 
   try {
     if (deveResponder(from, incomingMsg)) {
-      const promptFluxo = gerarPromptFluxo(from, incomingMsg);
+      const promptFluxo = gerarPromptFluxo(from, incomingMsg, nomeCliente);
 
       if (promptFluxo) {
         // Chamar OpenAI
@@ -133,8 +151,9 @@ app.post("/whatsapp", async (req, res) => {
         // Simular pausa antes de enviar
         await new Promise(r => setTimeout(r, 1500));
 
+        // Enviar resposta via Twilio
         await client.messages.create({
-          from: twilioNumber,
+          from: MEU_NUMERO,
           to: from,
           body: reply,
         });
@@ -149,7 +168,7 @@ app.post("/whatsapp", async (req, res) => {
       range: "Leads!A:E",
       valueInputOption: "RAW",
       requestBody: {
-        values: [[new Date().toLocaleString(), from, incomingMsg, "", ""]],
+        values: [[new Date().toLocaleString(), from, incomingMsg, nomeCliente, ""]],
       },
     });
 
@@ -162,6 +181,8 @@ app.post("/whatsapp", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor da Suelen rodando na porta ${PORT}`));
+
+
 
 
 
