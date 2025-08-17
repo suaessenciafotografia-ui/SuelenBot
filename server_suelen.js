@@ -1,11 +1,12 @@
 // Instalar pacotes:
-// npm install express body-parser openai dotenv twilio
+// npm install express body-parser openai dotenv twilio googleapis
 
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import twilio from "twilio";
+import { google } from "googleapis";
 
 dotenv.config();
 
@@ -20,10 +21,18 @@ const MEU_NUMERO = `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`;
 // OpenAI
 const openai = new OpenAI({ apiKey: process.env.OPENAI_KEY });
 
+// Google Sheets
+const auth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_CREDS),
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+const sheets = google.sheets({ version: "v4", auth });
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+
 // Memória temporária por cliente
 const memoriaClientes = {};
 
-// Função para pegar ou inicializar estado do cliente
+// Inicializa ou pega estado do cliente
 function pegarEstadoCliente(numero) {
   if (!memoriaClientes[numero]) {
     memoriaClientes[numero] = {
@@ -32,26 +41,27 @@ function pegarEstadoCliente(numero) {
       portfolio: false,
       dataPrevista: false,
       fechamento: false,
-      genero: null
+      genero: null,
+      nome: null
     };
   }
   return memoriaClientes[numero];
 }
 
-// Função simples para detectar gênero pelo nome
+// Função aprimorada para detectar gênero pelo nome
 function detectarGenero(nome) {
   if (!nome) return "mulher";
-  const feminino = ["a", "ana", "mar", "let", "ayla"];
-  const masculino = ["tales", "dred", "dr", "will"];
+  const feminino = ["a", "ana", "mar", "let", "ayla", "maria", "carla"];
+  const masculino = ["tales", "dred", "dr", "will", "joao", "carlos", "pedro"];
   const nomeLower = nome.toLowerCase();
   if (feminino.some(n => nomeLower.includes(n))) return "mulher";
   if (masculino.some(n => nomeLower.includes(n))) return "homem";
   return "mulher";
 }
 
-// Prompt base da Suelen
+// Função para gerar o prompt baseado no estado do cliente
 function gerarPrompt(estado) {
-  if (!estado.apresentacao) return "Apresente-se como Suelen, assistente do Jonatas 😊 de forma acolhedora.";
+  if (!estado.apresentacao) return "Apresente-se como Suelen, assistente do Jonatas 😊 de forma acolhedora e natural.";
   if (!estado.areaObjetivo) return "Pergunte de forma direta sobre a área de atuação e objetivo do cliente com as fotos 🎯";
   if (!estado.portfolio) {
     if (estado.genero === "mulher") {
@@ -61,7 +71,7 @@ function gerarPrompt(estado) {
     }
   }
   if (!estado.dataPrevista) return "Pergunte de forma simpática qual a expectativa de data para a sessão 📅";
-  if (!estado.fechamento) return "Finalize informando que Jonatas enviará um orçamento personalizado ✨";
+  if (!estado.fechamento) return "Finalize informando que Jonatas enviará um orçamento personalizado aqui mesmo pelo WhatsApp ✨";
   return null;
 }
 
@@ -80,9 +90,10 @@ app.post("/whatsapp", async (req, res) => {
 
   const estado = pegarEstadoCliente(from);
   if (!estado.genero) estado.genero = detectarGenero(nomeCliente);
+  if (!estado.nome) estado.nome = nomeCliente || "Cliente";
 
   const promptFluxo = gerarPrompt(estado);
-  if (!promptFluxo) return res.sendStatus(200); // Já finalizou
+  if (!promptFluxo) return res.sendStatus(200); // fluxo finalizado
 
   try {
     const aiResponse = await openai.chat.completions.create({
@@ -90,7 +101,7 @@ app.post("/whatsapp", async (req, res) => {
       messages: [
         {
           role: "system",
-          content: `Você é Suelen, assistente do fotógrafo Jonatas Teixeira. Seja acolhedora, simpática, humana, use emojis quando fizer sentido. Nunca repita "Olá" ou "OK". Siga o fluxo do cliente: apresentação → área/objetivo → portfólio → data → fechamento.`
+          content: `Você é Suelen, assistente do fotógrafo Jonatas Teixeira. Seja acolhedora, simpática, humana e direta. Use emojis quando fizer sentido. Siga o fluxo: apresentação → área/objetivo → portfólio → data → fechamento. Nunca repita etapas já concluídas.`
         },
         { role: "user", content: promptFluxo }
       ],
@@ -109,12 +120,22 @@ app.post("/whatsapp", async (req, res) => {
       body: reply,
     });
 
-    // Marca etapa como concluída
+    // Atualiza etapas concluídas
     if (!estado.apresentacao) estado.apresentacao = true;
     else if (!estado.areaObjetivo) estado.areaObjetivo = true;
     else if (!estado.portfolio) estado.portfolio = true;
     else if (!estado.dataPrevista) estado.dataPrevista = true;
     else if (!estado.fechamento) estado.fechamento = true;
+
+    // Salvar na planilha: data, número, nome, mensagem recebida
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: process.env.SPREADSHEET_ID,
+      range: "Leads!A:D",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[new Date().toLocaleString(), from, estado.nome, incomingMsg]],
+      },
+    });
 
     res.sendStatus(200);
 
@@ -126,6 +147,7 @@ app.post("/whatsapp", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor da Suelen rodando na porta ${PORT}`));
+
 
 
 
