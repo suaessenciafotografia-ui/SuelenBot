@@ -29,58 +29,79 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: "v4", auth });
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
-// Memória temporária por cliente
-const memoriaClientes = {};
-
-// Inicializa ou pega estado do cliente
-function pegarEstadoCliente(numero) {
-  if (!memoriaClientes[numero]) {
-    memoriaClientes[numero] = {
-      etapa: 0, // 0: boas-vindas, 1: qualificação, 2: serviços, 3: orçamento, 4: agendamento, 5: encerramento
-      nome: null,
-      genero: null,
-      respostas: {}
-    };
+// Função para consultar etapas salvas na planilha
+async function pegarEstadoClientePlanilha(numero) {
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Leads!A:E",
+    });
+    const linhas = res.data.values || [];
+    const linhaCliente = linhas.reverse().find(l => l[1] === numero); // último registro
+    if (linhaCliente) {
+      return {
+        apresentacaoFeita: linhaCliente[4] === "apresentacao",
+        areaObjetivoFeita: linhaCliente[4] === "areaObjetivo",
+        portfolioFeito: linhaCliente[4] === "portfolio",
+        dataPrevistaFeita: linhaCliente[4] === "dataPrevista",
+        fechamentoFeito: linhaCliente[4] === "fechamento",
+        nome: linhaCliente[2] || numero,
+      };
+    }
+  } catch (err) {
+    console.error("Erro ao pegar estado na planilha:", err);
   }
-  return memoriaClientes[numero];
+  return {
+    apresentacaoFeita: false,
+    areaObjetivoFeita: false,
+    portfolioFeito: false,
+    dataPrevistaFeita: false,
+    fechamentoFeito: false,
+    nome: numero,
+  };
 }
 
-// Detecta gênero pelo contexto da mensagem
-function detectarGenero(mensagem) {
-  if (!mensagem) return null;
-  const msgLower = mensagem.toLowerCase();
-  if (msgLower.includes("sou médico") || msgLower.includes("dr ")) return "homem";
-  if (msgLower.includes("sou médica") || msgLower.includes("dra ")) return "mulher";
+// Função para atualizar etapa na planilha
+async function atualizarEstadoPlanilha(numero, nome, etapa) {
+  try {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Leads!A:E",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[new Date().toLocaleString(), numero, nome, "", etapa]],
+      },
+    });
+  } catch (err) {
+    console.error("Erro ao atualizar planilha:", err);
+  }
+}
+
+// Função para detectar gênero pelo nome
+function detectarGenero(nome) {
+  if (!nome) return "mulher";
+  const feminino = ["a", "ana", "mar", "let", "ayla", "maria", "carla"];
+  const masculino = ["tales", "dred", "dr", "will", "joao", "carlos", "pedro", "felipe"];
+  const nomeLower = nome.toLowerCase();
+  if (feminino.some(n => nomeLower.includes(n))) return "mulher";
+  if (masculino.some(n => nomeLower.includes(n))) return "homem";
+  return "mulher";
+}
+
+// Função para gerar prompt baseado na etapa
+function gerarPromptPorEtapa(estado, incomingMsg) {
+  if (!estado.apresentacaoFeita) return `Apresente-se como Suelen, assistente do Jonatas 😊, de forma acolhedora e natural. Diga boas-vindas e ofereça ajuda para descobrir o tipo de sessão ideal.`;
+  if (!estado.areaObjetivoFeita) return `Pergunte sobre tipo de sessão, objetivo da sessão, preferência de estilo ou locação e se já fez sessões de fotos antes.`;
+  if (!estado.portfolioFeito) {
+    if (estado.genero === "mulher") {
+      return `Mostre os links do portfólio feminino de forma simpática:\n- https://suaessenciafotografia.pixieset.com/letciapache/\n- https://suaessenciafotografia.pixieset.com/marliacatalano/\n- https://suaessenciafotografia.pixieset.com/aylapacheli/`;
+    } else {
+      return `Mostre os links do portfólio masculino de forma simpática:\n- https://suaessenciafotografia.pixieset.com/talesgabbi/\n- https://suaessenciafotografia.pixieset.com/dredsonuramoto/\n- https://suaessenciafotografia.pixieset.com/drwilliamschwarzer/`;
+    }
+  }
+  if (!estado.dataPrevistaFeita) return `Pergunte de forma simpática qual a expectativa de data para a sessão 📅 e informe sobre opções de locações como Artflex, Atmo Design, Dome Design, estúdio fixo ou móvel.`;
+  if (!estado.fechamentoFeito) return `Finalize explicando que Jonatas enviará um orçamento personalizado com base nas respostas do cliente e informe sobre a Consulta de Essência Visual como bônus.`;
   return null;
-}
-
-// Gera prompt para OpenAI baseado na etapa do cliente
-function gerarPrompt(estado) {
-  switch (estado.etapa) {
-    case 0:
-      return "Boas-vindas: Olá! 😊 Sou a assistente virtual da Sua Essência Fotografia. Posso te ajudar a descobrir qual tipo de sessão é ideal para você?";
-    case 1:
-      return `Qualificação: Pergunte de forma acolhedora e estratégica sobre:
-- Tipo de sessão (Pessoal, corporativa ou produtos)
-- Objetivo da sessão (Ex.: Instagram, LinkedIn, marketing pessoal)
-- Preferência de estilo ou locação
-- Já fez sessões de fotos antes?
-Aguarde a resposta do cliente antes de continuar.`;
-    case 2:
-      return `Apresentação de serviços e diferenciais: Explique que temos retratos corporativos, fotografia de produtos, cobertura de eventos e vídeos institucionais. Destaque a captura da essência, sofisticação e atendimento personalizado. Informe sobre a Consulta de Essência Visual como bônus, incluindo orientação de looks, poses e mensagem.`;
-    case 3:
-      return `Coleta de informações para orçamento: Pergunte:
-- Quantas pessoas participarão da sessão?
-- Local e duração desejada
-- Preferência por pacote padrão ou orçamento personalizado
-Após isso, informe: "Perfeito! Vou preparar um orçamento personalizado para você."`;
-    case 4:
-      return `Agendamento da Consulta de Essência Visual: Explique que é um bônus para alinhar looks, poses e mensagem para garantir que a sessão reflita a essência do cliente.`;
-    case 5:
-      return `Encerramento: Confirme que o orçamento será enviado e a Consulta de Essência Visual agendada. Reforce entusiasmo e acolhimento: "Você vai adorar o resultado! ✨"`;
-    default:
-      return null;
-  }
 }
 
 // Rota teste
@@ -96,23 +117,13 @@ app.post("/whatsapp", async (req, res) => {
 
   if (!incomingMsg.trim()) return res.sendStatus(200);
 
-  const estado = pegarEstadoCliente(from);
+  // Consultar estado na planilha
+  let estado = await pegarEstadoClientePlanilha(from);
+  if (!estado.genero) estado.genero = detectarGenero(nomeCliente);
+  if (!estado.nome) estado.nome = nomeCliente || from;
 
-  // Captura nome automaticamente se não tiver
-  if (!estado.nome) {
-    if (nomeCliente) estado.nome = nomeCliente;
-    else {
-      const matchNome = incomingMsg.match(/meu nome é (\w+)/i) || incomingMsg.match(/sou o (\w+)/i) || incomingMsg.match(/sou a (\w+)/i);
-      if (matchNome) estado.nome = matchNome[1];
-      else estado.nome = "Cliente";
-    }
-  }
-
-  // Detecta gênero pelo contexto
-  if (!estado.genero) estado.genero = detectarGenero(incomingMsg);
-
-  const promptFluxo = gerarPrompt(estado);
-  if (!promptFluxo) return res.sendStatus(200);
+  const prompt = gerarPromptPorEtapa(estado, incomingMsg);
+  if (!prompt) return res.sendStatus(200);
 
   try {
     const aiResponse = await openai.chat.completions.create({
@@ -120,16 +131,16 @@ app.post("/whatsapp", async (req, res) => {
       messages: [
         {
           role: "system",
-          content: `Você é a Suelen, assistente virtual da Sua Essência Fotografia. Seja acolhedora, sofisticada, estratégica e empática. Use emojis quando fizer sentido. Siga o fluxo: boas-vindas → qualificação → serviços → orçamento → agendamento → encerramento. Nunca repita etapas já concluídas. Não informe valores, apenas indique que o orçamento será personalizado.`
+          content: `Você é Suelen, assistente do fotógrafo Jonatas Teixeira. Seja acolhedora, simpática, humana e direta. Use emojis quando fizer sentido. Siga o fluxo: apresentação → qualificação → portfólio → data → fechamento. Não repita etapas já concluídas.`
         },
-        { role: "user", content: promptFluxo }
+        { role: "user", content: prompt }
       ],
       temperature: 0.7,
     });
 
     let reply = aiResponse.choices[0].message.content;
 
-    // Pausa humana aleatória para respostas mais naturais
+    // Pausa para parecer humano
     const pausa = Math.floor(Math.random() * 1500) + 1500;
     await new Promise(r => setTimeout(r, pausa));
 
@@ -139,18 +150,23 @@ app.post("/whatsapp", async (req, res) => {
       body: reply,
     });
 
-    // Avança para a próxima etapa
-    if (estado.etapa < 5) estado.etapa += 1;
-
-    // Salvar na planilha: data, número, nome, mensagem recebida
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: "Leads!A:E",
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [[new Date().toLocaleString(), from, estado.nome, incomingMsg, reply]],
-      },
-    });
+    // Atualiza etapa concluída e grava na planilha
+    if (!estado.apresentacaoFeita) {
+      estado.apresentacaoFeita = true;
+      await atualizarEstadoPlanilha(from, estado.nome, "apresentacao");
+    } else if (!estado.areaObjetivoFeita) {
+      estado.areaObjetivoFeita = true;
+      await atualizarEstadoPlanilha(from, estado.nome, "areaObjetivo");
+    } else if (!estado.portfolioFeito) {
+      estado.portfolioFeito = true;
+      await atualizarEstadoPlanilha(from, estado.nome, "portfolio");
+    } else if (!estado.dataPrevistaFeita) {
+      estado.dataPrevistaFeita = true;
+      await atualizarEstadoPlanilha(from, estado.nome, "dataPrevista");
+    } else if (!estado.fechamentoFeito) {
+      estado.fechamentoFeito = true;
+      await atualizarEstadoPlanilha(from, estado.nome, "fechamento");
+    }
 
     res.sendStatus(200);
   } catch (err) {
@@ -161,8 +177,6 @@ app.post("/whatsapp", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor da Suelen rodando na porta ${PORT}`));
-
-
 
 
 
