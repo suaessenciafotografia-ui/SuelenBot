@@ -29,78 +29,45 @@ const auth = new google.auth.GoogleAuth({
 const sheets = google.sheets({ version: "v4", auth });
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
-// Função para consultar etapas salvas na planilha
-async function pegarEstadoClientePlanilha(numero) {
-  try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: "Leads!A:E",
-    });
-    const linhas = res.data.values || [];
-    const linhaCliente = linhas.reverse().find(l => l[1] === numero); // último registro
-    if (linhaCliente) {
-      return {
-        apresentacaoFeita: linhaCliente[4] === "apresentacao",
-        areaObjetivoFeita: linhaCliente[4] === "areaObjetivo",
-        portfolioFeito: linhaCliente[4] === "portfolio",
-        dataPrevistaFeita: linhaCliente[4] === "dataPrevista",
-        fechamentoFeito: linhaCliente[4] === "fechamento",
-        nome: linhaCliente[2] || numero,
-      };
-    }
-  } catch (err) {
-    console.error("Erro ao pegar estado na planilha:", err);
+// Memória temporária por cliente
+const memoriaClientes = {};
+
+// Inicializa ou pega estado do cliente
+function pegarEstadoCliente(numero) {
+  if (!memoriaClientes[numero]) {
+    memoriaClientes[numero] = {
+      apresentacao: false,
+      qualificacao: false,
+      servicos: false,
+      coletaInfo: false,
+      fechamento: false,
+      nome: null
+    };
   }
-  return {
-    apresentacaoFeita: false,
-    areaObjetivoFeita: false,
-    portfolioFeito: false,
-    dataPrevistaFeita: false,
-    fechamentoFeito: false,
-    nome: numero,
-  };
+  return memoriaClientes[numero];
 }
 
-// Função para atualizar etapa na planilha
-async function atualizarEstadoPlanilha(numero, nome, etapa) {
-  try {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: "Leads!A:E",
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [[new Date().toLocaleString(), numero, nome, "", etapa]],
-      },
-    });
-  } catch (err) {
-    console.error("Erro ao atualizar planilha:", err);
-  }
+// Detecta nome automático do cliente se ele escrever algo como "sou o João" ou "meu nome é Maria"
+function detectarNome(mensagem, nomeWhatsApp) {
+  const regex = /(?:sou o|sou a|meu nome é|me chamo)\s+([A-Za-zÀ-ú]+)/i;
+  const match = mensagem.match(regex);
+  if (match) return match[1];
+  if (nomeWhatsApp) return nomeWhatsApp;
+  return null;
 }
 
-// Função para detectar gênero pelo nome
-function detectarGenero(nome) {
-  if (!nome) return "mulher";
-  const feminino = ["a", "ana", "mar", "let", "ayla", "maria", "carla"];
-  const masculino = ["tales", "dred", "dr", "will", "joao", "carlos", "pedro", "felipe"];
-  const nomeLower = nome.toLowerCase();
-  if (feminino.some(n => nomeLower.includes(n))) return "mulher";
-  if (masculino.some(n => nomeLower.includes(n))) return "homem";
-  return "mulher";
-}
-
-// Função para gerar prompt baseado na etapa
-function gerarPromptPorEtapa(estado, incomingMsg) {
-  if (!estado.apresentacaoFeita) return `Apresente-se como Suelen, assistente do Jonatas 😊, de forma acolhedora e natural. Diga boas-vindas e ofereça ajuda para descobrir o tipo de sessão ideal.`;
-  if (!estado.areaObjetivoFeita) return `Pergunte sobre tipo de sessão, objetivo da sessão, preferência de estilo ou locação e se já fez sessões de fotos antes.`;
-  if (!estado.portfolioFeito) {
-    if (estado.genero === "mulher") {
-      return `Mostre os links do portfólio feminino de forma simpática:\n- https://suaessenciafotografia.pixieset.com/letciapache/\n- https://suaessenciafotografia.pixieset.com/marliacatalano/\n- https://suaessenciafotografia.pixieset.com/aylapacheli/`;
-    } else {
-      return `Mostre os links do portfólio masculino de forma simpática:\n- https://suaessenciafotografia.pixieset.com/talesgabbi/\n- https://suaessenciafotografia.pixieset.com/dredsonuramoto/\n- https://suaessenciafotografia.pixieset.com/drwilliamschwarzer/`;
-    }
-  }
-  if (!estado.dataPrevistaFeita) return `Pergunte de forma simpática qual a expectativa de data para a sessão 📅 e informe sobre opções de locações como Artflex, Atmo Design, Dome Design, estúdio fixo ou móvel.`;
-  if (!estado.fechamentoFeito) return `Finalize explicando que Jonatas enviará um orçamento personalizado com base nas respostas do cliente e informe sobre a Consulta de Essência Visual como bônus.`;
+// Prompt base do GPT
+function gerarPrompt(estado, nomeCliente) {
+  if (!estado.apresentacao) 
+    return `Apresente-se como Suelen, assistente da Sua Essência Fotografia, acolhedora e simpática, usando emojis. Nome do cliente: ${nomeCliente || "Cliente"}.\nMensagem curta e interativa para WhatsApp.`;
+  if (!estado.qualificacao)
+    return "Pergunte de forma estratégica sobre o cliente: tipo de sessão, objetivo da sessão, estilo ou locação, se já fez sessões antes. Seja curto e acolhedor.";
+  if (!estado.servicos)
+    return "Explique os serviços e diferenciais da Sua Essência Fotografia de forma curta, incluindo a Consulta de Essência Visual como bônus.";
+  if (!estado.coletaInfo)
+    return "Pergunte informações para orçamento: quantidade de pessoas, local, duração, preferência por pacote ou orçamento personalizado. Mensagem curta e interativa.";
+  if (!estado.fechamento)
+    return "Finalize informando que o orçamento será enviado em breve e que a Consulta de Essência Visual será agendada como bônus. Seja acolhedora e curta.";
   return null;
 }
 
@@ -113,17 +80,15 @@ app.get("/", (req, res) => {
 app.post("/whatsapp", async (req, res) => {
   const incomingMsg = req.body.Body || "";
   const from = req.body.From || "";
-  const nomeCliente = req.body.ProfileName || "";
+  const nomeWhatsApp = req.body.ProfileName || "";
 
   if (!incomingMsg.trim()) return res.sendStatus(200);
 
-  // Consultar estado na planilha
-  let estado = await pegarEstadoClientePlanilha(from);
-  if (!estado.genero) estado.genero = detectarGenero(nomeCliente);
-  if (!estado.nome) estado.nome = nomeCliente || from;
+  const estado = pegarEstadoCliente(from);
+  if (!estado.nome) estado.nome = detectarNome(incomingMsg, nomeWhatsApp) || "Cliente";
 
-  const prompt = gerarPromptPorEtapa(estado, incomingMsg);
-  if (!prompt) return res.sendStatus(200);
+  const promptFluxo = gerarPrompt(estado, estado.nome);
+  if (!promptFluxo) return res.sendStatus(200); // fluxo finalizado
 
   try {
     const aiResponse = await openai.chat.completions.create({
@@ -131,44 +96,47 @@ app.post("/whatsapp", async (req, res) => {
       messages: [
         {
           role: "system",
-          content: `Você é Suelen, assistente do fotógrafo Jonatas Teixeira. Seja acolhedora, simpática, humana e direta. Use emojis quando fizer sentido. Siga o fluxo: apresentação → qualificação → portfólio → data → fechamento. Não repita etapas já concluídas.`
+          content: `Você é Suelen, assistente virtual da Sua Essência Fotografia de Jonatas Teixeira. Seja acolhedora, simpática, humana e curta. Use emojis quando fizer sentido. Evite textos longos, respostas genéricas ou repetir saudações. Siga o fluxo: apresentação → qualificação → serviços → coleta de info → fechamento.`
         },
-        { role: "user", content: prompt }
+        { role: "user", content: promptFluxo }
       ],
-      temperature: 0.7,
+      temperature: 0.6,
     });
 
     let reply = aiResponse.choices[0].message.content;
 
-    // Pausa para parecer humano
-    const pausa = Math.floor(Math.random() * 1500) + 1500;
-    await new Promise(r => setTimeout(r, pausa));
+    // Quebra em mensagens curtas por linha ou parágrafo
+    const linhas = reply.split("\n").filter(l => l.trim() !== "");
 
-    await client.messages.create({
-      from: MEU_NUMERO,
-      to: from,
-      body: reply,
-    });
-
-    // Atualiza etapa concluída e grava na planilha
-    if (!estado.apresentacaoFeita) {
-      estado.apresentacaoFeita = true;
-      await atualizarEstadoPlanilha(from, estado.nome, "apresentacao");
-    } else if (!estado.areaObjetivoFeita) {
-      estado.areaObjetivoFeita = true;
-      await atualizarEstadoPlanilha(from, estado.nome, "areaObjetivo");
-    } else if (!estado.portfolioFeito) {
-      estado.portfolioFeito = true;
-      await atualizarEstadoPlanilha(from, estado.nome, "portfolio");
-    } else if (!estado.dataPrevistaFeita) {
-      estado.dataPrevistaFeita = true;
-      await atualizarEstadoPlanilha(from, estado.nome, "dataPrevista");
-    } else if (!estado.fechamentoFeito) {
-      estado.fechamentoFeito = true;
-      await atualizarEstadoPlanilha(from, estado.nome, "fechamento");
+    for (const linha of linhas) {
+      await client.messages.create({
+        from: MEU_NUMERO,
+        to: from,
+        body: linha,
+      });
+      // Pausa curta entre mensagens (1-2s)
+      await new Promise(r => setTimeout(r, 1000 + Math.random() * 1000));
     }
 
+    // Atualiza etapas concluídas
+    if (!estado.apresentacao) estado.apresentacao = true;
+    else if (!estado.qualificacao) estado.qualificacao = true;
+    else if (!estado.servicos) estado.servicos = true;
+    else if (!estado.coletaInfo) estado.coletaInfo = true;
+    else if (!estado.fechamento) estado.fechamento = true;
+
+    // Salvar na planilha: data, número, nome, mensagem recebida
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Leads!A:D",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [[new Date().toLocaleString(), from, estado.nome, incomingMsg]],
+      },
+    });
+
     res.sendStatus(200);
+
   } catch (err) {
     console.error("Erro:", err);
     res.sendStatus(500);
