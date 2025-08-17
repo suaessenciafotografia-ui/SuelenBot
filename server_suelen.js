@@ -19,7 +19,6 @@ const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
-
 const MEU_NUMERO = `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`;
 
 // Configuração OpenAI
@@ -38,13 +37,7 @@ const contatosSalvos = ["5511999999999", "5511888888888"];
 
 // Palavras-chave para orçamento/valores
 const palavrasChave = [
-  "preço",
-  "valor",
-  "quanto",
-  "custa",
-  "orçamento",
-  "pacote",
-  "planos",
+  "preço", "valor", "quanto", "custa", "orçamento", "pacote", "planos",
 ];
 
 // Função para decidir se Suelen deve responder
@@ -56,31 +49,30 @@ function deveResponder(numero, mensagem) {
   return !contatoSalvo || temPalavraChave;
 }
 
-// Controle de fluxo por cliente
+// Memória do cliente
 const clientes = {};
 
-// Função para detectar gênero com base no nome (simples)
+// Detecta gênero pelo nome (simples)
 function detectarGenero(nomeCliente) {
-  if (!nomeCliente) return "mulher"; // padrão
-  const feminino = ["a", "ana", "mar", "let", "ayla"]; // nomes femininos comuns
-  const masculino = ["tales", "dred", "dr", "will"]; // nomes masculinos comuns
-
+  if (!nomeCliente) return "mulher";
+  const feminino = ["a", "ana", "mar", "let", "ayla"];
+  const masculino = ["tales", "dred", "dr", "will"];
   const nomeLower = nomeCliente.toLowerCase();
   if (feminino.some(n => nomeLower.includes(n))) return "mulher";
   if (masculino.some(n => nomeLower.includes(n))) return "homem";
-  return "mulher"; // padrão
+  return "mulher";
 }
 
-// Função que decide o próximo passo da Suelen
+// Função que gera o prompt da Suelen baseado no fluxo
 function gerarPromptFluxo(clienteId, mensagemCliente, nomeCliente = "") {
   if (!clientes[clienteId]) {
     clientes[clienteId] = {
       apresentacao: false,
       perguntaArea: false,
-      perguntaFotos: false,
       portfólioEnviado: false,
       dataPerguntada: false,
-      fechamento: false
+      fechamento: false,
+      areaRespondida: false,
     };
   }
 
@@ -88,24 +80,21 @@ function gerarPromptFluxo(clienteId, mensagemCliente, nomeCliente = "") {
   let prompt = "";
 
   if (!estado.apresentacao) {
-    prompt = "Apresente-se como Suelen, assistente do Jonatas 😊. Seja acolhedora e simpática. Não repita.";
+    prompt = "Apresente-se como Suelen, assistente do Jonatas 😊. Seja direta, acolhedora e simpática. Não repita a apresentação.";
     estado.apresentacao = true;
-  } else if (!estado.perguntaArea) {
-    prompt = "Pergunte de forma natural sobre a área de atuação e objetivos do cliente 🎯";
+  } else if (!estado.perguntaArea && !estado.areaRespondida) {
+    prompt = "Pergunte de forma direta sobre a área de atuação e o objetivo do cliente com as fotos 🎯. Aguarde a resposta.";
     estado.perguntaArea = true;
-  } else if (!estado.perguntaFotos) {
-    prompt = "Pergunte como fotos profissionais podem ajudar no momento atual do cliente, de forma acolhedora";
-    estado.perguntaFotos = true;
   } else if (!estado.portfólioEnviado) {
     const genero = detectarGenero(nomeCliente);
     if (genero === "mulher") {
-      prompt = "Envie links do portfólio feminino apenas uma vez, de forma simpática:\n- https://suaessenciafotografia.pixieset.com/letciapache/\n- https://suaessenciafotografia.pixieset.com/marliacatalano/\n- https://suaessenciafotografia.pixieset.com/aylapacheli/";
+      prompt = "Mostre os links do portfólio feminino, de forma direta e simpática:\n- https://suaessenciafotografia.pixieset.com/letciapache/\n- https://suaessenciafotografia.pixieset.com/marliacatalano/\n- https://suaessenciafotografia.pixieset.com/aylapacheli/";
     } else {
-      prompt = "Envie links do portfólio masculino apenas uma vez, de forma simpática:\n- https://suaessenciafotografia.pixieset.com/talesgabbi/\n- https://suaessenciafotografia.pixieset.com/dredsonuramoto/\n- https://suaessenciafotografia.pixieset.com/drwilliamschwarzer/";
+      prompt = "Mostre os links do portfólio masculino, de forma direta e simpática:\n- https://suaessenciafotografia.pixieset.com/talesgabbi/\n- https://suaessenciafotografia.pixieset.com/dredsonuramoto/\n- https://suaessenciafotografia.pixieset.com/drwilliamschwarzer/";
     }
     estado.portfólioEnviado = true;
   } else if (!estado.dataPerguntada) {
-    prompt = "Pergunte se o cliente tem alguma data prevista para a sessão 📅";
+    prompt = "Pergunte diretamente qual a expectativa de data para a sessão 📅";
     estado.dataPerguntada = true;
   } else if (!estado.fechamento) {
     prompt = "Finalize de forma simpática, informando que Jonatas enviará um orçamento personalizado ✨";
@@ -115,18 +104,17 @@ function gerarPromptFluxo(clienteId, mensagemCliente, nomeCliente = "") {
   return prompt;
 }
 
+// Rota inicial
 app.get("/", (req, res) => {
   res.send("🚀 Suelen está rodando!");
 });
 
+// Rota de mensagens WhatsApp
 app.post("/whatsapp", async (req, res) => {
-  console.log("Servidor recebeu a requisição!");
+  console.log("Mensagem recebida do cliente:", req.body.Body);
   const incomingMsg = req.body.Body || "";
   const from = req.body.From || "";
   const nomeCliente = req.body.ProfileName || "";
-
-  console.log("Mensagem recebida:", incomingMsg);
-  console.log("De:", from, "Nome do cliente:", nomeCliente);
 
   try {
     if (deveResponder(from, incomingMsg)) {
@@ -139,19 +127,20 @@ app.post("/whatsapp", async (req, res) => {
           messages: [
             {
               role: "system",
-              content: `Você é Suelen, assistente do fotógrafo Jonatas Teixeira, acolhedora, simpática, natural, persuasiva, com emojis.`
+              content: `Você é Suelen, assistente do fotógrafo Jonatas Teixeira. Seja direta, acolhedora, simpática, natural, persuasiva, use emojis quando fizer sentido. Nunca repita "Olá", "Oi" ou "OK" e nunca repita perguntas já respondidas.`
             },
             { role: "user", content: promptFluxo }
           ],
           temperature: 0.7,
         });
 
-        const reply = aiResponse.choices[0].message.content;
+        let reply = aiResponse.choices[0].message.content;
 
-        // Simular pausa antes de enviar
-        await new Promise(r => setTimeout(r, 1500));
+        // Pausa aleatória para parecer humano (1,5 a 3s)
+        const pausa = Math.floor(Math.random() * 1500) + 1500;
+        await new Promise(r => setTimeout(r, pausa));
 
-        // Enviar resposta via Twilio
+        // Enviar resposta
         await client.messages.create({
           from: MEU_NUMERO,
           to: from,
@@ -181,6 +170,8 @@ app.post("/whatsapp", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor da Suelen rodando na porta ${PORT}`));
+
+
 
 
 
