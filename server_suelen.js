@@ -1,152 +1,118 @@
 // Instalar pacotes:
-// npm install express body-parser openai dotenv twilio googleapis
+// npm install express body-parser openai googleapis dotenv twilio
 
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import OpenAI from "openai";
-import twilio from "twilio";
 import { google } from "googleapis";
+import twilio from "twilio";
 
 dotenv.config();
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
 
-// Twilio
+// --- Configuração do Twilio ---
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-const MEU_NUMERO = `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`;
 
-// OpenAI
-const openai = new OpenAI({ apiKey: process.env.OPENAI_KEY });
-
-// Google Sheets
+// --- Configuração do Google Sheets ---
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_CREDS),
+  credentials: {
+    type: "service_account",
+    project_id: process.env.GOOGLE_PROJECT_ID,
+    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+    client_email: process.env.GOOGLE_CLIENT_EMAIL,
+  },
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 const sheets = google.sheets({ version: "v4", auth });
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
-// Memória temporária por cliente
-const memoriaClientes = {};
-
-// Inicializa ou pega estado do cliente
-function pegarEstadoCliente(numero) {
-  if (!memoriaClientes[numero]) {
-    memoriaClientes[numero] = {
-      apresentacao: false,
-      areaObjetivo: false,
-      portfolio: false,
-      dataPrevista: false,
-      fechamento: false,
-      genero: null,
-      nome: null
-    };
-  }
-  return memoriaClientes[numero];
-}
-
-// Função aprimorada para detectar gênero pelo nome
-function detectarGenero(nome) {
-  if (!nome) return "mulher";
-  const feminino = ["a", "ana", "mar", "let", "ayla", "maria", "carla"];
-  const masculino = ["tales", "dred", "dr", "will", "joao", "carlos", "pedro"];
-  const nomeLower = nome.toLowerCase();
-  if (feminino.some(n => nomeLower.includes(n))) return "mulher";
-  if (masculino.some(n => nomeLower.includes(n))) return "homem";
-  return "mulher";
-}
-
-// Função para gerar o prompt baseado no estado do cliente
-function gerarPrompt(estado) {
-  if (!estado.apresentacao) return "Apresente-se como Suelen, assistente do Jonatas 😊 de forma acolhedora e natural.";
-  if (!estado.areaObjetivo) return "Pergunte de forma direta sobre a área de atuação e objetivo do cliente com as fotos 🎯";
-  if (!estado.portfolio) {
-    if (estado.genero === "mulher") {
-      return "Mostre os links do portfólio feminino de forma simpática:\n- https://suaessenciafotografia.pixieset.com/letciapache/\n- https://suaessenciafotografia.pixieset.com/marliacatalano/\n- https://suaessenciafotografia.pixieset.com/aylapacheli/";
-    } else {
-      return "Mostre os links do portfólio masculino de forma simpática:\n- https://suaessenciafotografia.pixieset.com/talesgabbi/\n- https://suaessenciafotografia.pixieset.com/dredsonuramoto/\n- https://suaessenciafotografia.pixieset.com/drwilliamschwarzer/";
-    }
-  }
-  if (!estado.dataPrevista) return "Pergunte de forma simpática qual a expectativa de data para a sessão 📅";
-  if (!estado.fechamento) return "Finalize informando que Jonatas enviará um orçamento personalizado aqui mesmo pelo WhatsApp ✨";
-  return null;
-}
-
-// Rota teste
-app.get("/", (req, res) => {
-  res.send("🚀 Suelen está rodando!");
+// --- OpenAI ---
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Rota WhatsApp
-app.post("/whatsapp", async (req, res) => {
-  const incomingMsg = req.body.Body || "";
-  const from = req.body.From || "";
-  const nomeCliente = req.body.ProfileName || "";
-
-  if (!incomingMsg.trim()) return res.sendStatus(200);
-
-  const estado = pegarEstadoCliente(from);
-  if (!estado.genero) estado.genero = detectarGenero(nomeCliente);
-  if (!estado.nome) estado.nome = nomeCliente || "Cliente";
-
-  const promptFluxo = gerarPrompt(estado);
-  if (!promptFluxo) return res.sendStatus(200); // fluxo finalizado
+// --- Função para salvar no Google Sheets ---
+async function salvarNoSheets(nome, telefone, interesse, status) {
+  const spreadsheetId = process.env.SHEET_ID;
 
   try {
-    const aiResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `Você é Suelen, assistente do fotógrafo Jonatas Teixeira. Seja acolhedora, simpática, humana e direta. Use emojis quando fizer sentido. Siga o fluxo: apresentação → área/objetivo → portfólio → data → fechamento. Nunca repita etapas já concluídas.`
-        },
-        { role: "user", content: promptFluxo }
-      ],
-      temperature: 0.7,
-    });
-
-    let reply = aiResponse.choices[0].message.content;
-
-    // Pausa humana aleatória
-    const pausa = Math.floor(Math.random() * 1500) + 1500;
-    await new Promise(r => setTimeout(r, pausa));
-
-    await client.messages.create({
-      from: MEU_NUMERO,
-      to: from,
-      body: reply,
-    });
-
-    // Atualiza etapas concluídas
-    if (!estado.apresentacao) estado.apresentacao = true;
-    else if (!estado.areaObjetivo) estado.areaObjetivo = true;
-    else if (!estado.portfolio) estado.portfolio = true;
-    else if (!estado.dataPrevista) estado.dataPrevista = true;
-    else if (!estado.fechamento) estado.fechamento = true;
-
-    // Salvar na planilha: data, número, nome, mensagem recebida
     await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.SPREADSHEET_ID,
-      range: "Leads!A:D",
-      valueInputOption: "RAW",
+      spreadsheetId,
+      range: "Respostas!A:D", // Nome da aba + colunas
+      valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[new Date().toLocaleString(), from, estado.nome, incomingMsg]],
+        values: [[nome, telefone, interesse, status]],
       },
     });
-
-    res.sendStatus(200);
-
-  } catch (err) {
-    console.error("Erro:", err);
-    res.sendStatus(500);
+    console.log("✅ Dados salvos na planilha!");
+  } catch (error) {
+    console.error("❌ Erro ao salvar na planilha:", error);
   }
+}
+
+// --- Fluxo do Bot ---
+async function processarMensagem(msg, from) {
+  let resposta = "";
+
+  // Captura telefone automaticamente (sem precisar perguntar)
+  const telefone = from.replace("whatsapp:", "");
+
+  // Primeira interação
+  if (/olá|oi|bom dia|boa tarde|boa noite/i.test(msg)) {
+    resposta = "Muito prazer, sou Suelen, assistente do Jonatas 📸. Me conta, qual é a sua área de atuação e o que espera transmitir com suas fotos?";
+    return resposta;
+  }
+
+  // Se cliente pede orçamento diretamente
+  if (/orçamento|preço|valor/i.test(msg)) {
+    await salvarNoSheets("", telefone, "Solicitou orçamento", "Aguardando envio");
+    resposta = "Claro! Para preparar seu orçamento, me diz: qual a sua área de atuação e qual objetivo você deseja alcançar com as fotos?";
+    return resposta;
+  }
+
+  // Se cliente informa profissão/área
+  if (/médico|advogado|psicólogo|coach|consultor|empresário|dentista/i.test(msg)) {
+    await salvarNoSheets("", telefone, msg, "Interesse registrado");
+    resposta = `Entendi, você é ${msg}. 📌 Vou preparar um portfólio personalizado para seu perfil e já te envio algumas opções. Pode me dizer se já tem uma expectativa de data para a sessão?`;
+    return resposta;
+  }
+
+  // Se cliente menciona datas
+  if (/amanhã|semana|mês|data|quando/i.test(msg)) {
+    resposta = "Perfeito, já anotei sua disponibilidade 🗓️. Em instantes envio o orçamento detalhado.";
+    return resposta;
+  }
+
+  // Caso genérico
+  resposta = "Entendi. Pode me contar um pouco mais sobre seu objetivo com as fotos? Assim preparo algo bem alinhado ao que você precisa.";
+  return resposta;
+}
+
+// --- Webhook Twilio ---
+app.post("/webhook", async (req, res) => {
+  const msg = req.body.Body;
+  const from = req.body.From;
+
+  console.log("📩 Mensagem recebida:", msg, "de", from);
+
+  const resposta = await processarMensagem(msg, from);
+
+  await client.messages.create({
+    body: resposta,
+    from: "whatsapp:" + process.env.TWILIO_NUMBER,
+    to: from,
+  });
+
+  res.send("ok");
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor da Suelen rodando na porta ${PORT}`));
+// --- Start server ---
+app.listen(3000, () => {
+  console.log("🚀 Servidor rodando na porta 3000");
+});
+
 
 
 
